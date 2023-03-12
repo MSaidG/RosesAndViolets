@@ -10,10 +10,97 @@ GameInputGamepadState gamePadState;
 int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance, PSTR cmdLine, int cmdShow)
 {
 
-
     //////////////////GAME INPUT INIT/////////////////////////////////
     GameInputCreate(&gamePadInput);
     //////////////////////////////////////////////////
+
+
+
+    /////////////////////AUDIO INIT//////////////////////////////////
+    HRESULT resultHandle;
+    IXAudio2 *pXAudio2 = 0;
+    IXAudio2MasteringVoice *pMasterVoice = 0;
+    WAVEFORMATEX waveFormat = {};
+    XAUDIO2_BUFFER xAudioBuffer = {};
+    TCHAR *audio = __TEXT("bosca3.wav");
+    HANDLE audioHandle;
+    DWORD chunkSize;
+    DWORD chunkPosition;
+    DWORD fileType;
+    IXAudio2SourceVoice* pSourceVoice;  
+    BYTE *audioBuffer = 0;
+
+    resultHandle = CoInitializeEx(0, COINIT_MULTITHREADED);
+    if (FAILED(resultHandle))
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+
+    if (FAILED(resultHandle = XAudio2Create (&pXAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR)))
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+
+    if (FAILED(resultHandle = pXAudio2->CreateMasteringVoice( &pMasterVoice)))
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+
+    audioHandle = CreateFile(audio, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+
+    if (INVALID_HANDLE_VALUE == audioHandle)
+    {
+        //return HRESULT_FROM_WIN32 (GetLastError());
+        printf("Invalid handle value");
+    }
+
+    if (INVALID_SET_FILE_POINTER == SetFilePointer(audioHandle, 0, 0, FILE_BEGIN))
+    {
+        //return HRESULT_FROM_WIN32(GetLastError());
+        printf("Invalid handle value");
+    }
+
+
+    FindChunk(audioHandle, fourccRIFF, chunkSize, chunkPosition);
+    ReadChunkData(audioHandle, &fileType, sizeof(DWORD), chunkPosition);
+    if (fileType != fourccWAVE)
+    {
+        //return S_FALSE;
+        printf("Wrong file type!");
+    }
+
+    FindChunk(audioHandle, fourccFMT, chunkSize, chunkPosition);
+    ReadChunkData(audioHandle, &waveFormat, chunkSize, chunkPosition);
+
+    FindChunk(audioHandle, fourccDATA, chunkSize, chunkPosition);
+    audioBuffer = new BYTE[chunkSize];
+    ReadChunkData(audioHandle, audioBuffer, chunkSize, chunkPosition);
+
+    xAudioBuffer.AudioBytes = chunkSize;
+    xAudioBuffer.pAudioData = audioBuffer;
+    xAudioBuffer.Flags = XAUDIO2_END_OF_STREAM;
+
+    if( FAILED(resultHandle = pXAudio2->CreateSourceVoice( &pSourceVoice, (WAVEFORMATEX*)&waveFormat ) ) )
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+
+    if( FAILED(resultHandle = pSourceVoice->SubmitSourceBuffer( &xAudioBuffer ) ) )
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+
+    if ( FAILED(resultHandle = pSourceVoice->Start( 0 ) ) )
+    {
+        //return resultHandle;
+        resultHandle = 0;
+    }
+    ////////////////////AUDIO INIT END///////////////////////////////////
 
 
 
@@ -67,10 +154,44 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance, PSTR cmdLine,
         {
             xOffset += 5;
             yOffset += 5;   
+            pSourceVoice->Stop(XAUDIO2_PLAY_TAILS, XAUDIO2_COMMIT_NOW);
+        }
+        else if (gamePadState.buttons == GameInputGamepadB)
+        {
+            pSourceVoice->Discontinuity();
+            pSourceVoice->Start( 0 );
+        }
+        else if (gamePadState.buttons == GameInputGamepadX)
+        {
+            pSourceVoice->FlushSourceBuffers();
+            pSourceVoice->DestroyVoice();
+            pSourceVoice = 0;
+
+            ReadChunkData(audioHandle, audioBuffer, chunkSize, chunkPosition);
+            xAudioBuffer.AudioBytes = chunkSize;
+            xAudioBuffer.pAudioData = audioBuffer;
+            xAudioBuffer.Flags = XAUDIO2_END_OF_STREAM;
+            if( FAILED(resultHandle = pXAudio2->CreateSourceVoice( &pSourceVoice, (WAVEFORMATEX*)&waveFormat ) ) )
+            {
+                //return resultHandle;
+                resultHandle = 0;
+            }
+
+            if( FAILED(resultHandle = pSourceVoice->SubmitSourceBuffer( &xAudioBuffer ) ) )
+            {
+                //return resultHandle;
+                resultHandle = 0;
+            }
+
+            if ( FAILED(resultHandle = pSourceVoice->Start( 0 ) ) )
+            {
+                //return resultHandle;
+                resultHandle = 0;
+            }
         }
 
         float xSpeed = gamePadState.leftThumbstickX*2;
-        printf("%f\n", xSpeed);
+        //printf("%f\n", xSpeed);
         if (xSpeed > 0.3f || xSpeed < -0.3f)
         {
             xOffset += xSpeed;
@@ -109,7 +230,7 @@ int WINAPI WinMain(HINSTANCE instance, HINSTANCE previousInstance, PSTR cmdLine,
 WNDCLASSEXA RegisterWindow(HINSTANCE instance)
 {
     WNDCLASSEXA windowClass = {};
-    HICON iconHandle = (HICON) LoadImageA(0, MAKEINTRESOURCE(32649), IMAGE_CURSOR, 0, 0, LR_SHARED);
+    HICON iconHandle = (HICON) LoadImageA(0, (LPCSTR)MAKEINTRESOURCE(32649), IMAGE_CURSOR, 0, 0, LR_SHARED);
 
     windowClass.cbSize = sizeof(windowClass);
     windowClass.style = CS_HREDRAW | CS_VREDRAW;
@@ -182,7 +303,6 @@ static window_dimension GetWindowDimension(HWND window)
 static void InitDIB(bitmap_buffer *buffer, int Width, int Height)
 {
 
-    // TODO: bullet proof this.
 
     if (buffer->memory)
     {
@@ -264,6 +384,74 @@ void PollGamePadInput()
         gamePad = 0;
     }
 
+}
+
+
+HRESULT FindChunk(HANDLE hFile, DWORD fourcc, DWORD &dwChunkSize, DWORD &dwChunkDataPosition)
+{
+
+    HRESULT hr = S_OK;
+    if( INVALID_SET_FILE_POINTER == SetFilePointer( hFile, 0, NULL, FILE_BEGIN ) )
+        return HRESULT_FROM_WIN32( GetLastError() );
+
+    DWORD dwChunkType;
+    DWORD dwChunkDataSize;
+    DWORD dwRIFFDataSize = 0;
+    DWORD dwFileType;
+    DWORD bytesRead = 0;
+    DWORD dwOffset = 0;
+
+    while (hr == S_OK)
+    {
+        DWORD dwRead;
+        if( 0 == ReadFile( hFile, &dwChunkType, sizeof(DWORD), &dwRead, NULL ) )
+            hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        if( 0 == ReadFile( hFile, &dwChunkDataSize, sizeof(DWORD), &dwRead, NULL ) )
+            hr = HRESULT_FROM_WIN32( GetLastError() );
+
+        switch (dwChunkType)
+        {
+        case fourccRIFF:
+            dwRIFFDataSize = dwChunkDataSize;
+            dwChunkDataSize = 4;
+            if( 0 == ReadFile( hFile, &dwFileType, sizeof(DWORD), &dwRead, NULL ) )
+                hr = HRESULT_FROM_WIN32( GetLastError() );
+            break;
+
+        default:
+            if( INVALID_SET_FILE_POINTER == SetFilePointer( hFile, dwChunkDataSize, NULL, FILE_CURRENT ) )
+            return HRESULT_FROM_WIN32( GetLastError() );            
+        }
+
+        dwOffset += sizeof(DWORD) * 2;
+
+        if (dwChunkType == fourcc)
+        {
+            dwChunkSize = dwChunkDataSize;
+            dwChunkDataPosition = dwOffset;
+            return S_OK;
+        }
+
+        dwOffset += dwChunkDataSize;
+
+        if (bytesRead >= dwRIFFDataSize) return S_FALSE;
+
+    }
+
+    return S_OK;
+
+}
+
+HRESULT ReadChunkData(HANDLE hFile, void *buffer, DWORD buffersize, DWORD bufferoffset)
+{
+    HRESULT hr = S_OK;
+    if( INVALID_SET_FILE_POINTER == SetFilePointer( hFile, bufferoffset, NULL, FILE_BEGIN ) )
+        return HRESULT_FROM_WIN32( GetLastError() );
+    DWORD dwRead;
+    if( 0 == ReadFile( hFile, buffer, buffersize, &dwRead, NULL ) )
+        hr = HRESULT_FROM_WIN32( GetLastError() );
+    return hr;
 }
 
 
